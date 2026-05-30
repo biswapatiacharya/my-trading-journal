@@ -23,6 +23,8 @@ const BROKER_OPTIONS: { value: BrokerFormat; label: string }[] = [
   { value: "robinhood", label: "Robinhood" },
   { value: "thinkorswim", label: "ThinkOrSwim (TOS)" },
   { value: "tradestation", label: "TradeStation" },
+  { value: "tastytrade", label: "Tastytrade" },
+  { value: "moomoo", label: "Moomoo" },
   { value: "public", label: "Public" },
   { value: "generic", label: "Generic CSV" },
 ];

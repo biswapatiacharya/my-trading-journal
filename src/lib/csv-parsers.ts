@@ -62,6 +62,36 @@ const BROKER_MAPPINGS: Record<BrokerFormat, CsvColumnMapping & { directionMap?: 
     fees: "Fee",
     directionMap: { "buy": "long", "sell": "short" },
   },
+  // Tastytrade: Account History CSV export
+  // Columns: Date,Time,Type,Action,Symbol,Instrument Type,Description,Value,Quantity,Average Price,Commissions,Fees,Multiplier,Underlying Symbol,Expiration Date,Strike Price,Call or Put
+  tastytrade: {
+    date: "Date",
+    time: "Time",
+    symbol: "Underlying Symbol",
+    direction: "Action",
+    entry_price: "Average Price",
+    quantity: "Quantity",
+    fees: "Commissions",
+    directionMap: {
+      "BUY_TO_OPEN": "long", "BUY TO OPEN": "long",
+      "SELL_TO_OPEN": "short", "SELL TO OPEN": "short",
+      "BUY_TO_CLOSE": "long", "BUY TO CLOSE": "long",
+      "SELL_TO_CLOSE": "short", "SELL TO CLOSE": "short",
+      "BUY": "long", "SELL": "short",
+    },
+  },
+  // Moomoo: Order History CSV export
+  // Columns: Order No.,Time,Symbol,Side,Type,Qty.,Filled Qty.,Price,Filled Avg. Price,Amount,Status,Commission,Tax,Misc. Fee
+  moomoo: {
+    date: "Time",
+    time: "Time",
+    symbol: "Symbol",
+    direction: "Side",
+    entry_price: "Filled Avg. Price",
+    quantity: "Filled Qty.",
+    fees: "Commission",
+    directionMap: { "Buy": "long", "Sell": "short", "BUY": "long", "SELL": "short" },
+  },
   generic: {
     date: "date",
     time: "time",
@@ -112,6 +142,8 @@ function detectBrokerFormat(headers: string[]): BrokerFormat {
   if (headerSet.has("exec time") && headerSet.has("fees & comm")) return "thinkorswim";
   if (headerSet.has("buy/sell") && headerSet.has("commission")) return "tradestation";
   if (headerSet.has("ticker") && headerSet.has("transaction type")) return "public";
+  if (headerSet.has("underlying symbol") && headerSet.has("instrument type")) return "tastytrade";
+  if (headerSet.has("filled avg. price") && headerSet.has("filled qty.")) return "moomoo";
 
   return "generic";
 }
@@ -151,7 +183,10 @@ export function parseCsvFile(
 
       const entryPrice = parseNumber(row[mapping.entry_price] ?? "0");
       const quantity = Math.abs(parseNumber(row[mapping.quantity] ?? "0"));
-      const fees = parseNumber(row[mapping.fees ?? ""] ?? "0");
+      // Tastytrade has both Commissions and Fees columns — combine them
+      const fees = detectedFormat === "tastytrade"
+        ? Math.abs(parseNumber(row["Commissions"] ?? "0")) + Math.abs(parseNumber(row["Fees"] ?? "0"))
+        : parseNumber(row[mapping.fees ?? ""] ?? "0");
       const exitPrice = mapping.exit_price ? parseNumber(row[mapping.exit_price] ?? "0") : undefined;
       const pnl = mapping.pnl ? parseNumber(row[mapping.pnl] ?? "") : undefined;
 
@@ -164,9 +199,15 @@ export function parseCsvFile(
       const date = parseDate(rawDate);
       const time = mapping.time ? (row[mapping.time] ?? "").split(" ").pop()?.slice(0, 5) : undefined;
 
-      // Detect options from symbol
-      const isOptions = /\d{6}[CP]\d+/.test(symbol) || symbol.includes(" ");
-      const assetType = isOptions ? "options" : "stock";
+      // Detect options: Tastytrade has an "Instrument Type" column; others use OCC symbol pattern
+      const instrumentType = (row["Instrument Type"] ?? row["instrument type"] ?? "").toLowerCase();
+      const isOptions =
+        instrumentType === "equity option" ||
+        instrumentType === "future option" ||
+        /\d{6}[CP]\d+/.test(symbol) ||
+        /\d{6}[CP]\d+/.test(row["Symbol"] ?? "");
+      const isFutures = instrumentType.includes("future") && !instrumentType.includes("option");
+      const assetType = isOptions ? "options" : isFutures ? "futures" : "stock";
 
       trades.push({
         date,

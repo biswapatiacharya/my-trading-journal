@@ -216,6 +216,8 @@ export type BrokerFormat =
   | "thinkorswim"
   | "tradestation"
   | "public"
+  | "tastytrade"
+  | "moomoo"
   | "generic";
 
 export interface CsvColumnMapping {
