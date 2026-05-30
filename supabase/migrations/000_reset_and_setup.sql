@@ -264,5 +264,25 @@ CREATE POLICY "Users can delete own trade images" ON storage.objects
     AND auth.uid()::text = (storage.foldername(name))[1]
   );
 
+-- ── 8. Grants (required when tables are created via raw SQL) ─
+-- Without these, service_role and authenticated cannot access the tables.
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+
+GRANT ALL ON public.profiles        TO anon, authenticated, service_role;
+GRANT ALL ON public.strategies      TO anon, authenticated, service_role;
+GRANT ALL ON public.tags            TO anon, authenticated, service_role;
+GRANT ALL ON public.trades          TO anon, authenticated, service_role;
+GRANT ALL ON public.trade_images    TO anon, authenticated, service_role;
+GRANT ALL ON public.trade_tags      TO anon, authenticated, service_role;
+GRANT ALL ON public.journal_entries TO anon, authenticated, service_role;
+GRANT ALL ON public.ai_insights     TO anon, authenticated, service_role;
+
+-- Future tables get the same grants automatically
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT ALL ON TABLES TO anon, authenticated, service_role;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
+
 -- ── Done ─────────────────────────────────────────────────────
 SELECT 'Database setup complete ✓' AS status;
