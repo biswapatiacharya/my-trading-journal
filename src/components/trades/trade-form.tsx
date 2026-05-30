@@ -6,7 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Loader2, Upload, X, Plus, ChevronDown, ChevronUp } from "lucide-react";
+import { Loader2, Upload, X, Plus } from "lucide-react";
 import Image from "next/image";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -84,8 +84,10 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
   const form = useForm<FormData>({
     resolver: zodResolver(tradeSchema),
     defaultValues: {
-      date: trade?.date ?? format(new Date(), "yyyy-MM-dd"),
-      time: trade?.time ?? format(new Date(), "HH:mm"),
+      // Use stable string defaults to avoid server/client hydration mismatch.
+      // useEffect below sets the real current date/time after mount.
+      date: trade?.date ?? "",
+      time: trade?.time ?? "",
       symbol: trade?.symbol ?? "",
       direction: trade?.direction ?? "long",
       asset_type: trade?.asset_type ?? "stock",
@@ -116,6 +118,14 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
       tag_ids: trade?.tags?.map((t) => t.id) ?? [],
     },
   });
+
+  // Set date/time after mount to avoid server/client hydration mismatch
+  useEffect(() => {
+    if (!trade) {
+      form.setValue("date", format(new Date(), "yyyy-MM-dd"));
+      form.setValue("time", format(new Date(), "HH:mm"));
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const watchedValues = form.watch(["direction", "entry_price", "exit_price", "quantity", "fees", "stop_loss", "take_profit", "asset_type"]);
   const [direction, entryPrice, exitPrice, quantity, fees, stopLoss, takeProfit, assetType] = watchedValues;
