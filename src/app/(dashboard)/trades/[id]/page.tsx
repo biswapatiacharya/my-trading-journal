@@ -8,7 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import { formatCurrency, formatPercent, formatDate, formatHoldingTime, getPnlColor } from "@/lib/utils";
 import { ArrowLeft, Edit, TrendingUp, TrendingDown } from "lucide-react";
 import Link from "next/link";
-import Image from "next/image";
+import { TradeScreenshots } from "@/components/trades/trade-screenshots";
 import type { Trade, Strategy, Tag } from "@/types";
 
 interface PageProps {
@@ -262,31 +262,7 @@ export default async function TradeDetailPage({ params, searchParams }: PageProp
       )}
 
       {/* Screenshots */}
-      {(normalised.images?.length ?? 0) > 0 && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Screenshots</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {normalised.images?.map((img) => (
-                <div key={img.id} className="space-y-1">
-                  <p className="text-xs text-muted-foreground capitalize">{img.image_type} Chart</p>
-                  <div className="relative rounded-lg overflow-hidden border aspect-video bg-muted">
-                    <Image
-                      src={img.public_url}
-                      alt={`${img.image_type} chart`}
-                      fill
-                      className="object-cover"
-                      unoptimized
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      <TradeScreenshots images={normalised.images ?? []} />
     </div>
   );
 }

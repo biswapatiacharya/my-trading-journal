@@ -6,7 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Loader2, Upload, X, Plus } from "lucide-react";
+import { Loader2, Upload, X } from "lucide-react";
 import Image from "next/image";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -25,7 +25,7 @@ import {
   calculateRMultiple, calculatePositionSize,
 } from "@/lib/trade-calculations";
 import { EMOTION_OPTIONS, formatCurrency, formatPercent, cn } from "@/lib/utils";
-import type { Trade, Strategy, Tag, TradeFormData } from "@/types";
+import type { Trade, Strategy, Tag } from "@/types";
 import { format } from "date-fns";
 
 const tradeSchema = z.object({
@@ -78,8 +78,7 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
   const [images, setImages] = useState<{ type: "entry" | "exit" | "notes"; file?: File; url: string; existing?: boolean; id?: string }[]>(
     trade?.images?.map((img) => ({ type: img.image_type, url: img.public_url, existing: true, id: img.id })) ?? []
   );
-  const [showOptions, setShowOptions] = useState(trade?.asset_type === "options");
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [, setShowOptions] = useState(trade?.asset_type === "options");
 
   const form = useForm<FormData>({
     resolver: zodResolver(tradeSchema),
@@ -404,10 +403,10 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
                     control={form.control}
                     name="strategy_id"
                     render={({ field }) => (
-                      <Select value={field.value ?? ""} onValueChange={(v) => field.onChange(v || null)}>
+                      <Select value={field.value ?? "__none__"} onValueChange={(v) => field.onChange(v === "__none__" ? null : v)}>
                         <SelectTrigger><SelectValue placeholder="No strategy" /></SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="">No strategy</SelectItem>
+                          <SelectItem value="__none__">No strategy</SelectItem>
                           {strategies.map((s) => (
                             <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
                           ))}

@@ -3,7 +3,7 @@
 import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Upload, FileText, CheckCircle, AlertTriangle, Loader2, ChevronDown } from "lucide-react";
+import { Upload, CheckCircle, AlertTriangle, Loader2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { parseCsvFile } from "@/lib/csv-parsers";
 import { calculatePnl, calculatePositionSize, calculatePnlPercentage } from "@/lib/trade-calculations";
@@ -12,7 +12,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatCurrency, getPnlColor, cn } from "@/lib/utils";
 import type { Strategy, Tag, ImportedTrade, BrokerFormat } from "@/types";
@@ -226,12 +225,12 @@ export function ImportClient({ strategies }: ImportClientProps) {
             {strategies.length > 0 && (
               <div className="space-y-1.5">
                 <Label>Assign Strategy (optional)</Label>
-                <Select value={selectedStrategy} onValueChange={setSelectedStrategy}>
+                <Select value={selectedStrategy || "__none__"} onValueChange={(v) => setSelectedStrategy(v === "__none__" ? "" : v)}>
                   <SelectTrigger>
                     <SelectValue placeholder="No strategy" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">No strategy</SelectItem>
+                    <SelectItem value="__none__">No strategy</SelectItem>
                     {strategies.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
                   </SelectContent>
                 </Select>

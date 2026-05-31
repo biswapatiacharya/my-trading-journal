@@ -109,8 +109,9 @@ export function TradeListClient({ trades: initialTrades, strategies, tags }: Tra
   }
 
   const totalPnl = filtered.reduce((s, t) => s + (t.pnl ?? 0), 0);
-  const winRate = filtered.length > 0
-    ? (filtered.filter((t) => (t.pnl ?? 0) > 0).length / filtered.filter((t) => t.status === "closed").length) * 100 || 0
+  const closedFiltered = filtered.filter((t) => t.status === "closed");
+  const winRate = closedFiltered.length > 0
+    ? (closedFiltered.filter((t) => (t.pnl ?? 0) > 0).length / closedFiltered.length) * 100
     : 0;
 
   function SortButton({ field, label }: { field: SortField; label: string }) {
@@ -138,6 +139,7 @@ export function TradeListClient({ trades: initialTrades, strategies, tags }: Tra
             {filtered.length > 0 && (
               <span className={getPnlColor(totalPnl)}>{formatCurrency(totalPnl)}</span>
             )}
+            {closedFiltered.length > 0 && ` · Win rate: ${winRate.toFixed(0)}%`}
           </p>
         </div>
         <Button asChild>
