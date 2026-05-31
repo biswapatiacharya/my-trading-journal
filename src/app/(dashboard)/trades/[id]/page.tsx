@@ -179,13 +179,26 @@ export default async function TradeDetailPage({ params, searchParams }: PageProp
       {normalised.asset_type === "options" && (
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-base">Options Details</CardTitle>
+            <div className="flex items-center gap-3">
+              <CardTitle className="text-base">Options Details</CardTitle>
+              {normalised.option_type && (
+                <Badge
+                  variant="outline"
+                  className={normalised.option_type === "call"
+                    ? "border-profit/50 text-profit font-bold"
+                    : "border-loss/50 text-loss font-bold"}
+                >
+                  {normalised.option_type.toUpperCase()}
+                </Badge>
+              )}
+            </div>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
               {[
                 ["Strike", normalised.option_strike ? formatCurrency(normalised.option_strike) : "—"],
-                ["DTE", normalised.option_dte != null ? `${normalised.option_dte} days` : "—"],
+                ["Expiry", normalised.option_expiry_date ? formatDate(normalised.option_expiry_date) : "—"],
+                ["DTE at Entry", normalised.option_dte != null ? `${normalised.option_dte}d` : "—"],
                 ["Premium", normalised.option_premium ? formatCurrency(normalised.option_premium) : "—"],
                 ["Delta", normalised.option_delta != null ? normalised.option_delta.toFixed(3) : "—"],
                 ["Theta", normalised.option_theta != null ? normalised.option_theta.toFixed(4) : "—"],
@@ -196,6 +209,37 @@ export default async function TradeDetailPage({ params, searchParams }: PageProp
                   <p className="font-semibold mt-0.5">{value}</p>
                 </div>
               ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Exit legs */}
+      {(normalised.exit_legs?.length ?? 0) > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Exit Breakdown</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {normalised.exit_legs!.map((leg, i) => {
+                const legPnl = normalised.direction === "long"
+                  ? (leg.exit_price - normalised.entry_price) * leg.quantity - leg.fees
+                  : (normalised.entry_price - leg.exit_price) * leg.quantity - leg.fees;
+                return (
+                  <div key={i} className="flex items-center justify-between py-2 border-b last:border-0">
+                    <div className="text-sm">
+                      <span className="font-medium">Exit {i + 1}</span>
+                      <span className="text-muted-foreground ml-2">{formatDate(leg.date)}</span>
+                      <span className="text-muted-foreground ml-2">· {leg.quantity} @ {formatCurrency(leg.exit_price)}</span>
+                      {leg.fees > 0 && <span className="text-muted-foreground ml-1">(fees: {formatCurrency(leg.fees)})</span>}
+                    </div>
+                    <span className={`text-sm font-semibold ${legPnl >= 0 ? "text-profit" : "text-loss"}`}>
+                      {formatCurrency(legPnl)}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </CardContent>
         </Card>

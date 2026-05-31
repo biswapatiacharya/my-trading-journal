@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { useForm, Controller } from "react-hook-form";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { useForm, Controller, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Loader2, Upload, X } from "lucide-react";
+import { Loader2, Upload, X, Plus, RefreshCw } from "lucide-react";
 import Image from "next/image";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,15 @@ import {
 import { EMOTION_OPTIONS, formatCurrency, formatPercent, cn } from "@/lib/utils";
 import type { Trade, Strategy, Tag } from "@/types";
 import { format } from "date-fns";
+
+// ── Schemas ──────────────────────────────────────────────────
+const exitLegSchema = z.object({
+  quantity: z.coerce.number().positive("Required"),
+  exit_price: z.coerce.number().positive("Required"),
+  date: z.string().min(1, "Required"),
+  time: z.string().optional().default(""),
+  fees: z.coerce.number().min(0).default(0),
+});
 
 const tradeSchema = z.object({
   date: z.string().min(1, "Date is required"),
@@ -52,13 +61,19 @@ const tradeSchema = z.object({
   r_multiple: z.coerce.number().optional().nullable(),
   spy_correlation: z.coerce.number().min(-1).max(1).optional().nullable(),
   gex_level: z.string().optional(),
+  // Options
+  option_type: z.enum(["call", "put"]).optional().nullable(),
+  option_expiry_date: z.string().optional().nullable(),
   option_delta: z.coerce.number().optional().nullable(),
   option_theta: z.coerce.number().optional().nullable(),
   option_iv: z.coerce.number().min(0).optional().nullable(),
   option_dte: z.coerce.number().int().min(0).optional().nullable(),
   option_strike: z.coerce.number().positive().optional().nullable(),
   option_premium: z.coerce.number().positive().optional().nullable(),
+  // Tags
   tag_ids: z.array(z.string()).default([]),
+  // Exit legs for partial exits
+  exit_legs: z.array(exitLegSchema).default([]),
 });
 
 type FormData = z.infer<typeof tradeSchema>;
@@ -75,16 +90,30 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
   const isEdit = !!trade;
 
   const [saving, setSaving] = useState(false);
+  const [fetchingPrice, setFetchingPrice] = useState<"entry" | "exit" | null>(null);
   const [images, setImages] = useState<{ type: "entry" | "exit" | "notes"; file?: File; url: string; existing?: boolean; id?: string }[]>(
     trade?.images?.map((img) => ({ type: img.image_type, url: img.public_url, existing: true, id: img.id })) ?? []
   );
   const [, setShowOptions] = useState(trade?.asset_type === "options");
 
+  // Seed exit legs: if editing a legacy trade with exit_price but no legs, create one leg
+  const seedLegs = useMemo(() => {
+    if (trade?.exit_legs && trade.exit_legs.length > 0) return trade.exit_legs;
+    if (trade?.exit_price) {
+      return [{
+        quantity: trade.quantity,
+        exit_price: trade.exit_price,
+        date: trade.date,
+        time: trade.time ?? "",
+        fees: 0,
+      }];
+    }
+    return [];
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const form = useForm<FormData>({
     resolver: zodResolver(tradeSchema),
     defaultValues: {
-      // Use stable string defaults to avoid server/client hydration mismatch.
-      // useEffect below sets the real current date/time after mount.
       date: trade?.date ?? "",
       time: trade?.time ?? "",
       symbol: trade?.symbol ?? "",
@@ -92,7 +121,7 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
       asset_type: trade?.asset_type ?? "stock",
       status: trade?.status ?? "closed",
       entry_price: trade?.entry_price ?? (undefined as unknown as number),
-      exit_price: trade?.exit_price ?? null,
+      exit_price: seedLegs.length > 0 ? null : (trade?.exit_price ?? null),
       quantity: trade?.quantity ?? (undefined as unknown as number),
       fees: trade?.fees ?? 0,
       stop_loss: trade?.stop_loss ?? null,
@@ -108,6 +137,8 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
       r_multiple: trade?.r_multiple ?? null,
       spy_correlation: trade?.spy_correlation ?? null,
       gex_level: trade?.gex_level ?? "",
+      option_type: trade?.option_type ?? null,
+      option_expiry_date: trade?.option_expiry_date ?? null,
       option_delta: trade?.option_delta ?? null,
       option_theta: trade?.option_theta ?? null,
       option_iv: trade?.option_iv ?? null,
@@ -115,10 +146,11 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
       option_strike: trade?.option_strike ?? null,
       option_premium: trade?.option_premium ?? null,
       tag_ids: trade?.tags?.map((t) => t.id) ?? [],
+      exit_legs: seedLegs,
     },
   });
 
-  // Set date/time after mount to avoid server/client hydration mismatch
+  // Set date/time on mount for new trades
   useEffect(() => {
     if (!trade) {
       form.setValue("date", format(new Date(), "yyyy-MM-dd"));
@@ -126,10 +158,57 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Exit legs field array
+  const { fields: exitFields, append: appendExit, remove: removeExit } = useFieldArray({
+    control: form.control,
+    name: "exit_legs",
+  });
+
   const watchedValues = form.watch(["direction", "entry_price", "exit_price", "quantity", "fees", "stop_loss", "take_profit", "asset_type"]);
   const [direction, entryPrice, exitPrice, quantity, fees, stopLoss, takeProfit, assetType] = watchedValues;
+  const exitLegs = form.watch("exit_legs");
+  const watchedExpiry = form.watch("option_expiry_date");
 
-  // Live P&L preview
+  // Auto-calculate DTE when expiry date changes
+  useEffect(() => {
+    if (!watchedExpiry) return;
+    const tradeDate = form.getValues("date") || new Date().toISOString().split("T")[0];
+    const dte = Math.max(0, Math.round(
+      (new Date(watchedExpiry).getTime() - new Date(tradeDate).getTime()) / 86_400_000
+    ));
+    form.setValue("option_dte", dte);
+  }, [watchedExpiry]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Show/hide options section based on asset type
+  useEffect(() => {
+    setShowOptions(assetType === "options");
+  }, [assetType]);
+
+  // Compute remaining quantity and per-leg P&L
+  const totalExited = useMemo(
+    () => exitLegs.reduce((s, l) => s + (Number(l.quantity) || 0), 0),
+    [exitLegs]
+  );
+  const remaining = (Number(quantity) || 0) - totalExited;
+
+  const legPnls = useMemo(() => {
+    if (!entryPrice) return exitLegs.map(() => null);
+    const ep = Number(entryPrice);
+    return exitLegs.map((l) => {
+      if (!l.exit_price || !l.quantity) return null;
+      const legFees = Number(l.fees) || 0;
+      return direction === "long"
+        ? (Number(l.exit_price) - ep) * Number(l.quantity) - legFees
+        : (ep - Number(l.exit_price)) * Number(l.quantity) - legFees;
+    });
+  }, [exitLegs, entryPrice, direction]);
+
+  const totalLegPnl = useMemo(
+    () => legPnls.reduce<number>((s, p) => s + (p ?? 0), 0),
+    [legPnls]
+  );
+
+  // Live P&L preview (single exit mode)
   const liveCalc = useCallback(() => {
     if (!entryPrice || !quantity) return null;
     const ep = Number(entryPrice);
@@ -148,12 +227,25 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
     return { pnl, pnlPct, rr, posSize, rm };
   }, [direction, entryPrice, exitPrice, quantity, fees, stopLoss, takeProfit]);
 
-  const calc = liveCalc();
+  const calc = exitLegs.length === 0 ? liveCalc() : null;
 
-  // Show options section when asset type changes
-  useEffect(() => {
-    setShowOptions(assetType === "options");
-  }, [assetType]);
+  async function fetchPrice(field: "entry" | "exit") {
+    const symbol = form.getValues("symbol");
+    if (!symbol) { toast.error("Enter a symbol first"); return; }
+    setFetchingPrice(field);
+    try {
+      const res = await fetch(`/api/market-price?symbol=${encodeURIComponent(symbol)}`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Failed");
+      if (field === "entry") form.setValue("entry_price", json.price);
+      else form.setValue("exit_price", json.price);
+      toast.success(`${symbol} price: $${json.price}`);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Price unavailable");
+    } finally {
+      setFetchingPrice(null);
+    }
+  }
 
   async function uploadImage(file: File, tradeId: string, imageType: string): Promise<string> {
     const { data: { user } } = await supabase.auth.getUser();
@@ -171,14 +263,36 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
       if (!user) throw new Error("Not authenticated");
 
       const ep = Number(data.entry_price);
-      const xp = data.exit_price ? Number(data.exit_price) : null;
       const qty = Number(data.quantity);
       const f = Number(data.fees) || 0;
       const sl = data.stop_loss ? Number(data.stop_loss) : null;
       const tp = data.take_profit ? Number(data.take_profit) : null;
+      const legs = data.exit_legs ?? [];
 
-      const pnl = xp !== null && data.status === "closed" ? calculatePnl(data.direction, ep, xp, qty, f) : null;
-      const pnlPct = xp !== null ? calculatePnlPercentage(data.direction, ep, xp) : null;
+      let xp: number | null;
+      let pnl: number | null;
+      let pnlPct: number | null;
+      let autoStatus = data.status;
+
+      if (legs.length > 0) {
+        // Partial/multi exit — compute weighted avg exit price
+        const totalExitedQty = legs.reduce((s, l) => s + Number(l.quantity), 0);
+        xp = legs.reduce((s, l) => s + Number(l.exit_price) * Number(l.quantity), 0) / totalExitedQty;
+        pnl = legs.reduce((s, l) => {
+          const legFees = Number(l.fees) || 0;
+          return s + (data.direction === "long"
+            ? (Number(l.exit_price) - ep) * Number(l.quantity) - legFees
+            : (ep - Number(l.exit_price)) * Number(l.quantity) - legFees);
+        }, 0) - f;
+        pnlPct = calculatePnlPercentage(data.direction, ep, xp);
+        const leftover = qty - totalExitedQty;
+        autoStatus = leftover <= 0 ? "closed" : leftover < qty ? "partial" : "open";
+      } else {
+        xp = data.exit_price ? Number(data.exit_price) : null;
+        pnl = xp !== null && data.status === "closed" ? calculatePnl(data.direction, ep, xp, qty, f) : null;
+        pnlPct = xp !== null ? calculatePnlPercentage(data.direction, ep, xp) : null;
+      }
+
       const rr = calculateRiskReward(data.direction, ep, sl, tp);
       const posSize = calculatePositionSize(ep, qty);
       const rm = pnl !== null ? calculateRMultiple(pnl, ep, sl, qty) : data.r_multiple;
@@ -190,7 +304,7 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
         symbol: data.symbol,
         direction: data.direction,
         asset_type: data.asset_type,
-        status: data.status,
+        status: autoStatus,
         entry_price: ep,
         exit_price: xp,
         quantity: qty,
@@ -212,12 +326,15 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
         trade_quality_score: data.trade_quality_score || null,
         spy_correlation: data.spy_correlation || null,
         gex_level: data.gex_level || null,
+        option_type: data.option_type || null,
+        option_expiry_date: data.option_expiry_date || null,
         option_delta: data.option_delta || null,
         option_theta: data.option_theta || null,
         option_iv: data.option_iv || null,
         option_dte: data.option_dte || null,
         option_strike: data.option_strike || null,
         option_premium: data.option_premium || null,
+        exit_legs: legs.length > 0 ? legs : null,
       };
 
       let tradeId: string;
@@ -267,10 +384,7 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
     const file = e.target.files?.[0];
     if (!file) return;
     const url = URL.createObjectURL(file);
-    setImages((prev) => {
-      const filtered = prev.filter((i) => i.type !== type);
-      return [...filtered, { type, file, url, existing: false }];
-    });
+    setImages((prev) => [...prev.filter((i) => i.type !== type), { type, file, url, existing: false }]);
   }
 
   function removeImage(type: string) {
@@ -279,25 +393,32 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
 
   function toggleEmotion(emotion: string) {
     const current = form.getValues("emotions");
-    if (current.includes(emotion)) {
-      form.setValue("emotions", current.filter((e) => e !== emotion));
-    } else {
-      form.setValue("emotions", [...current, emotion]);
-    }
+    form.setValue("emotions", current.includes(emotion)
+      ? current.filter((e) => e !== emotion)
+      : [...current, emotion]);
   }
 
   function toggleTag(tagId: string) {
     const current = form.getValues("tag_ids");
-    if (current.includes(tagId)) {
-      form.setValue("tag_ids", current.filter((t) => t !== tagId));
-    } else {
-      form.setValue("tag_ids", [...current, tagId]);
-    }
+    form.setValue("tag_ids", current.includes(tagId)
+      ? current.filter((t) => t !== tagId)
+      : [...current, tagId]);
+  }
+
+  function addExitLeg() {
+    appendExit({
+      quantity: Math.max(remaining, 1),
+      exit_price: 0 as unknown as number,
+      date: form.getValues("date") || format(new Date(), "yyyy-MM-dd"),
+      time: format(new Date(), "HH:mm"),
+      fees: 0,
+    });
   }
 
   const selectedEmotions = form.watch("emotions");
   const selectedTagIds = form.watch("tag_ids");
   const confidenceScore = form.watch("confidence_score");
+  const watchedOptionType = form.watch("option_type");
 
   return (
     <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
@@ -422,27 +543,35 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
           {/* Prices */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">Prices & Size</CardTitle>
+              <CardTitle className="text-base">Entry</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="entry_price">Entry Price *</Label>
-                  <Input id="entry_price" type="number" step="0.0001" placeholder="0.00" {...form.register("entry_price")} />
+                  <div className="flex gap-1.5">
+                    <Input id="entry_price" type="number" step="0.0001" placeholder="0.00" {...form.register("entry_price")} />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      title="Fetch current price from Polygon"
+                      onClick={() => fetchPrice("entry")}
+                      disabled={fetchingPrice !== null}
+                    >
+                      {fetchingPrice === "entry" ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                    </Button>
+                  </div>
                   {form.formState.errors.entry_price && <p className="text-xs text-destructive">{form.formState.errors.entry_price.message}</p>}
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="exit_price">Exit Price</Label>
-                  <Input id="exit_price" type="number" step="0.0001" placeholder="0.00" {...form.register("exit_price")} />
+                  <Label htmlFor="quantity">Qty / Contracts *</Label>
+                  <Input id="quantity" type="number" step="0.001" placeholder="100" {...form.register("quantity")} />
+                  {form.formState.errors.quantity && <p className="text-xs text-destructive">{form.formState.errors.quantity.message}</p>}
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <Label htmlFor="quantity">Quantity / Shares *</Label>
-                  <Input id="quantity" type="number" step="0.001" placeholder="100" {...form.register("quantity")} />
-                  {form.formState.errors.quantity && <p className="text-xs text-destructive">{form.formState.errors.quantity.message}</p>}
-                </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="fees">Fees / Commission</Label>
                   <Input id="fees" type="number" step="0.01" placeholder="0.00" {...form.register("fees")} />
@@ -459,34 +588,128 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
                   <Input id="take_profit" type="number" step="0.0001" placeholder="Optional" {...form.register("take_profit")} />
                 </div>
               </div>
+            </CardContent>
+          </Card>
 
-              {/* Live P&L preview */}
-              {calc && (
-                <div className="rounded-lg bg-muted/50 p-3 space-y-2">
-                  <p className="text-xs font-medium text-muted-foreground">Live Calculations</p>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-                    <div>
-                      <p className="text-xs text-muted-foreground">P&L</p>
-                      <p className={cn("font-bold", calc.pnl !== null && (calc.pnl >= 0 ? "text-profit" : "text-loss"))}>
-                        {calc.pnl !== null ? formatCurrency(calc.pnl) : "—"}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">P&L %</p>
-                      <p className={cn("font-semibold", calc.pnlPct !== null && (calc.pnlPct >= 0 ? "text-profit" : "text-loss"))}>
-                        {calc.pnlPct !== null ? formatPercent(calc.pnlPct) : "—"}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">R/R Ratio</p>
-                      <p className="font-semibold">{calc.rr ? `${calc.rr.toFixed(2)}:1` : "—"}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">Position Size</p>
-                      <p className="font-semibold">{formatCurrency(calc.posSize)}</p>
-                    </div>
-                  </div>
+          {/* Exit legs */}
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base">Exits</CardTitle>
+                  {exitFields.length > 0 && (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {totalExited} of {Number(quantity) || 0} exited
+                      {remaining > 0 && ` · ${remaining} remaining`}
+                    </p>
+                  )}
                 </div>
+                <Button type="button" size="sm" variant="outline" onClick={addExitLeg}>
+                  <Plus className="w-4 h-4 mr-1" /> Add Exit
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {exitFields.length === 0 ? (
+                <>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="exit_price">Exit Price</Label>
+                    <div className="flex gap-1.5">
+                      <Input id="exit_price" type="number" step="0.0001" placeholder="0.00" {...form.register("exit_price")} />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        title="Fetch current price from Polygon"
+                        onClick={() => fetchPrice("exit")}
+                        disabled={fetchingPrice !== null}
+                      >
+                        {fetchingPrice === "exit" ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">Use "Add Exit" above to record partial exits separately</p>
+                  </div>
+
+                  {/* Single-exit live calc */}
+                  {calc && (
+                    <div className="rounded-lg bg-muted/50 p-3 space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground">Live Preview</p>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                        <div>
+                          <p className="text-xs text-muted-foreground">P&L</p>
+                          <p className={cn("font-bold", calc.pnl !== null && (calc.pnl >= 0 ? "text-profit" : "text-loss"))}>
+                            {calc.pnl !== null ? formatCurrency(calc.pnl) : "—"}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">P&L %</p>
+                          <p className={cn("font-semibold", calc.pnlPct !== null && (calc.pnlPct >= 0 ? "text-profit" : "text-loss"))}>
+                            {calc.pnlPct !== null ? formatPercent(calc.pnlPct) : "—"}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">R/R</p>
+                          <p className="font-semibold">{calc.rr ? `${calc.rr.toFixed(2)}:1` : "—"}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Position</p>
+                          <p className="font-semibold">{formatCurrency(calc.posSize)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  {exitFields.map((field, i) => (
+                    <div key={field.id} className="rounded-lg border p-3 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-muted-foreground">Exit {i + 1}</span>
+                        <div className="flex items-center gap-2">
+                          {legPnls[i] !== null && (
+                            <span className={cn("text-xs font-semibold", (legPnls[i] ?? 0) >= 0 ? "text-profit" : "text-loss")}>
+                              {formatCurrency(legPnls[i] ?? 0)}
+                            </span>
+                          )}
+                          <Button type="button" size="icon-sm" variant="ghost" onClick={() => removeExit(i)}>
+                            <X className="w-3 h-3" />
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Qty</Label>
+                          <Input type="number" step="1" placeholder="2" className="h-8" {...form.register(`exit_legs.${i}.quantity`)} />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Exit Price</Label>
+                          <Input type="number" step="0.0001" placeholder="0.00" className="h-8" {...form.register(`exit_legs.${i}.exit_price`)} />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Date</Label>
+                          <Input type="date" className="h-8" {...form.register(`exit_legs.${i}.date`)} />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Fees</Label>
+                          <Input type="number" step="0.01" placeholder="0.00" className="h-8" {...form.register(`exit_legs.${i}.fees`)} />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Multi-exit summary */}
+                  <div className="rounded-lg bg-muted/50 p-3">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-muted-foreground">Total P&L (all exits)</span>
+                      <span className={cn("font-bold", totalLegPnl >= 0 ? "text-profit" : "text-loss")}>
+                        {formatCurrency(totalLegPnl)}
+                      </span>
+                    </div>
+                    {remaining > 0 && (
+                      <p className="text-xs text-muted-foreground mt-1">{remaining} contracts still open</p>
+                    )}
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>
@@ -581,23 +804,64 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
         <TabsContent value="options" className="space-y-4 mt-4">
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">Options Greeks & Details</CardTitle>
+              <CardTitle className="text-base">Options Contract Details</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* CALL / PUT */}
+              <div className="space-y-1.5">
+                <Label>Contract Type</Label>
+                <div className="flex gap-2">
+                  {(["call", "put"] as const).map((t) => (
+                    <Button
+                      key={t}
+                      type="button"
+                      variant={watchedOptionType === t ? (t === "call" ? "profit" : "loss") : "outline"}
+                      size="sm"
+                      className="flex-1 uppercase font-bold tracking-wide"
+                      onClick={() => form.setValue("option_type", watchedOptionType === t ? null : t)}
+                    >
+                      {t === "call" ? "📈 CALL" : "📉 PUT"}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="option_strike">Strike Price</Label>
                   <Input id="option_strike" type="number" step="0.5" placeholder="150.00" {...form.register("option_strike")} />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="option_dte">DTE (Days to Expiry)</Label>
-                  <Input id="option_dte" type="number" min="0" step="1" placeholder="30" {...form.register("option_dte")} />
+                  <Label htmlFor="option_expiry_date">Expiry Date</Label>
+                  <Input
+                    id="option_expiry_date"
+                    type="date"
+                    {...form.register("option_expiry_date")}
+                  />
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <Label htmlFor="option_premium">Premium Paid (per contract)</Label>
-                <Input id="option_premium" type="number" step="0.01" placeholder="2.50" {...form.register("option_premium")} />
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="option_dte">
+                    DTE
+                    <span className="text-xs text-muted-foreground ml-1">(auto-calculated)</span>
+                  </Label>
+                  <Input
+                    id="option_dte"
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="—"
+                    readOnly
+                    className="bg-muted/50 text-muted-foreground"
+                    {...form.register("option_dte")}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="option_premium">Premium (per contract)</Label>
+                  <Input id="option_premium" type="number" step="0.01" placeholder="2.50" {...form.register("option_premium")} />
+                </div>
               </div>
 
               <Separator />

@@ -290,7 +290,20 @@ export function TradeListClient({ trades: initialTrades, strategies, tags }: Tra
                         {trade.direction}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground capitalize">{trade.asset_type}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      <span className="capitalize">{trade.asset_type}</span>
+                      {trade.asset_type === "options" && trade.option_type && (
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "ml-1 text-[10px] px-1 py-0 font-bold",
+                            trade.option_type === "call" ? "border-profit/50 text-profit" : "border-loss/50 text-loss"
+                          )}
+                        >
+                          {trade.option_type.toUpperCase()}
+                        </Badge>
+                      )}
+                    </TableCell>
                     <TableCell>{trade.quantity}</TableCell>
                     <TableCell>{formatCurrency(trade.entry_price)}</TableCell>
                     <TableCell>{trade.exit_price ? formatCurrency(trade.exit_price) : <span className="text-muted-foreground">—</span>}</TableCell>

@@ -83,6 +83,8 @@ export interface Trade {
   gex_level: string | null;
 
   // Options-specific
+  option_type: "call" | "put" | null;
+  option_expiry_date: string | null;
   option_delta: number | null;
   option_theta: number | null;
   option_iv: number | null;
@@ -91,8 +93,19 @@ export interface Trade {
   option_premium: number | null;
   option_greeks: Record<string, number> | null;
 
+  // Partial exits
+  exit_legs: ExitLeg[] | null;
+
   created_at: string;
   updated_at: string;
+}
+
+export interface ExitLeg {
+  quantity: number;
+  exit_price: number;
+  date: string;
+  time?: string;
+  fees: number;
 }
 
 export interface TradeImage {
