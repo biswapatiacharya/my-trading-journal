@@ -174,6 +174,20 @@ export function parseCsvFile(
 
   parsed.data.forEach((row, i) => {
     try {
+      // Tastytrade: only process actual trade rows (skip Money Movement, Receive Deliver, Dividend, etc.)
+      if (detectedFormat === "tastytrade") {
+        const rowType = (row["Type"] ?? "").toLowerCase().trim();
+        if (!rowType.includes("trade")) return;
+      }
+
+      // Moomoo: only process fully filled orders (skip Cancelled, Partial, Unfilled)
+      if (detectedFormat === "moomoo") {
+        const status = (row["Status"] ?? "").toLowerCase().trim();
+        if (status && status !== "filled" && status !== "全部成交") return;
+        const filledQty = parseNumber(row["Filled Qty."] ?? "0");
+        if (!filledQty) return;
+      }
+
       const symbol = (row[mapping.symbol] ?? "").trim().toUpperCase();
       if (!symbol) return;
 
@@ -197,7 +211,9 @@ export function parseCsvFile(
 
       const rawDate = row[mapping.date] ?? "";
       const date = parseDate(rawDate);
-      const time = mapping.time ? (row[mapping.time] ?? "").split(" ").pop()?.slice(0, 5) : undefined;
+      // Fix: take first space-delimited token ("10:00:00 AM CST" → "10:00:00" → "10:00")
+      const rawTime = mapping.time ? (row[mapping.time] ?? "").trim() : "";
+      const time = rawTime ? rawTime.split(" ")[0].slice(0, 5) : undefined;
 
       // Detect options: Tastytrade has an "Instrument Type" column; others use OCC symbol pattern
       const instrumentType = (row["Instrument Type"] ?? row["instrument type"] ?? "").toLowerCase();

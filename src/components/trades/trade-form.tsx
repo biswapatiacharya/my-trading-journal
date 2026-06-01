@@ -355,15 +355,17 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
         trade_quality_score: data.trade_quality_score || null,
         spy_correlation: data.spy_correlation || null,
         gex_level: data.gex_level || null,
-        option_type: data.option_type || null,
-        option_expiry_date: data.option_expiry_date || null,
+        // Existing option columns (already in DB)
         option_delta: data.option_delta || null,
         option_theta: data.option_theta || null,
         option_iv: data.option_iv || null,
         option_dte: data.option_dte || null,
         option_strike: data.option_strike || null,
         option_premium: data.option_premium || null,
-        exit_legs: legs.length > 0 ? legs : null,
+        // New columns — only include when non-null so saves work even before migration 003 is run
+        ...(data.option_type ? { option_type: data.option_type } : {}),
+        ...(data.option_expiry_date ? { option_expiry_date: data.option_expiry_date } : {}),
+        ...(legs.length > 0 ? { exit_legs: legs } : {}),
       };
 
       let tradeId: string;
@@ -403,7 +405,9 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
       router.push(`/trades/${tradeId}`);
       router.refresh();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "Failed to save trade");
+      console.error("Trade save error:", err);
+      const msg = (err as { message?: string })?.message ?? "Failed to save trade";
+      toast.error(msg);
     } finally {
       setSaving(false);
     }
