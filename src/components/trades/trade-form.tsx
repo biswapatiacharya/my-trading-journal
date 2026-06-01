@@ -28,48 +28,56 @@ import { EMOTION_OPTIONS, formatCurrency, formatPercent, cn } from "@/lib/utils"
 import type { Trade, Strategy, Tag } from "@/types";
 import { format } from "date-fns";
 
+// ── Helpers ───────────────────────────────────────────────────
+// Cleared number inputs send "" — preprocess converts that to undefined
+// so Zod's .optional() short-circuits before .positive() / .min() runs.
+const emptyToUndef = (v: unknown) => (v === "" ? undefined : v);
+const optPos  = z.preprocess(emptyToUndef, z.coerce.number().positive().optional().nullable());
+const optNum  = z.preprocess(emptyToUndef, z.coerce.number().optional().nullable());
+const optInt  = z.preprocess(emptyToUndef, z.coerce.number().int().min(0).optional().nullable());
+
 // ── Schemas ──────────────────────────────────────────────────
 const exitLegSchema = z.object({
-  quantity: z.coerce.number().positive("Required"),
-  exit_price: z.coerce.number().positive("Required"),
-  date: z.string().min(1, "Required"),
-  time: z.string().optional().default(""),
-  fees: z.coerce.number().min(0).default(0),
+  quantity:    z.preprocess(emptyToUndef, z.coerce.number().positive("Required")),
+  exit_price:  z.preprocess(emptyToUndef, z.coerce.number().positive("Required")),
+  date:        z.string().min(1, "Required"),
+  time:        z.string().optional().default(""),
+  fees:        z.preprocess(emptyToUndef, z.coerce.number().min(0).default(0)),
 });
 
 const tradeSchema = z.object({
-  date: z.string().min(1, "Date is required"),
-  time: z.string().optional(),
-  symbol: z.string().min(1, "Symbol is required").transform((v) => v.toUpperCase()),
-  direction: z.enum(["long", "short"]),
+  date:       z.string().min(1, "Date is required"),
+  time:       z.string().optional(),
+  symbol:     z.string().min(1, "Symbol is required").transform((v) => v.toUpperCase()),
+  direction:  z.enum(["long", "short"]),
   asset_type: z.enum(["stock", "options", "futures", "forex", "crypto"]),
-  status: z.enum(["open", "closed", "partial"]),
+  status:     z.enum(["open", "closed", "partial"]),
   entry_price: z.coerce.number().positive("Entry price must be positive"),
-  exit_price: z.coerce.number().positive().optional().nullable(),
-  quantity: z.coerce.number().positive("Quantity must be positive"),
-  fees: z.coerce.number().min(0).default(0),
-  stop_loss: z.coerce.number().positive().optional().nullable(),
-  take_profit: z.coerce.number().positive().optional().nullable(),
+  exit_price:  optPos,
+  quantity:    z.coerce.number().positive("Quantity must be positive"),
+  fees:        z.preprocess(emptyToUndef, z.coerce.number().min(0).default(0)),
+  stop_loss:   optPos,
+  take_profit: optPos,
   strategy_id: z.string().optional().nullable(),
-  notes: z.string().optional(),
+  notes:       z.string().optional(),
   setup_notes: z.string().optional(),
-  emotions: z.array(z.string()).default([]),
+  emotions:    z.array(z.string()).default([]),
   confidence_score: z.number().min(1).max(10).default(5),
   first_breakout_of_day: z.boolean().default(false),
-  a_plus_score: z.coerce.number().min(1).max(10).optional().nullable(),
-  trade_quality_score: z.coerce.number().min(0).max(100).optional().nullable(),
-  r_multiple: z.coerce.number().optional().nullable(),
-  spy_correlation: z.coerce.number().min(-1).max(1).optional().nullable(),
+  a_plus_score:       z.preprocess(emptyToUndef, z.coerce.number().min(1).max(10).optional().nullable()),
+  trade_quality_score: z.preprocess(emptyToUndef, z.coerce.number().min(0).max(100).optional().nullable()),
+  r_multiple:     optNum,
+  spy_correlation: z.preprocess(emptyToUndef, z.coerce.number().min(-1).max(1).optional().nullable()),
   gex_level: z.string().optional(),
   // Options
-  option_type: z.enum(["call", "put"]).optional().nullable(),
+  option_type:        z.enum(["call", "put"]).optional().nullable(),
   option_expiry_date: z.string().optional().nullable(),
-  option_delta: z.coerce.number().optional().nullable(),
-  option_theta: z.coerce.number().optional().nullable(),
-  option_iv: z.coerce.number().min(0).optional().nullable(),
-  option_dte: z.coerce.number().int().min(0).optional().nullable(),
-  option_strike: z.coerce.number().positive().optional().nullable(),
-  option_premium: z.coerce.number().positive().optional().nullable(),
+  option_delta:   optNum,
+  option_theta:   optNum,
+  option_iv:      z.preprocess(emptyToUndef, z.coerce.number().min(0).optional().nullable()),
+  option_dte:     optInt,
+  option_strike:  optPos,
+  option_premium: optPos,
   // Tags
   tag_ids: z.array(z.string()).default([]),
   // Exit legs for partial exits
@@ -454,7 +462,11 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
   const watchedOptionType = form.watch("option_type");
 
   return (
-    <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+    <form onSubmit={form.handleSubmit(onSubmit, (errors) => {
+        console.error("Form validation errors:", errors);
+        const names = Object.keys(errors).join(", ");
+        toast.error(`Fix required fields: ${names}`);
+      })} className="space-y-6">
       <Tabs defaultValue="core">
         <TabsList className="w-full">
           <TabsTrigger value="core" className="flex-1">Core</TabsTrigger>
@@ -904,7 +916,7 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
 
               <Separator />
 
-              {/* Greeks — auto-fetched from Polygon */}
+              {/* Greeks — fetched from Polygon, not entered manually */}
               <div className="flex items-center justify-between">
                 <p className="text-sm font-medium">Greeks at Entry</p>
                 <Button
@@ -921,23 +933,41 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
                   Fetch from Polygon
                 </Button>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <Label htmlFor="option_delta">Delta</Label>
-                  <Input id="option_delta" type="number" step="0.001" min="-1" max="1" placeholder="auto" {...form.register("option_delta")} />
+
+              {/* Hidden registered fields — values set by fetchGreeks() */}
+              <input type="hidden" {...form.register("option_delta")} />
+              <input type="hidden" {...form.register("option_theta")} />
+              <input type="hidden" {...form.register("option_iv")} />
+
+              {/* Show fetched values as read-only badges */}
+              {(form.watch("option_delta") != null || form.watch("option_theta") != null || form.watch("option_iv") != null) ? (
+                <div className="flex flex-wrap gap-2">
+                  {form.watch("option_delta") != null && (
+                    <Badge variant="outline" className="text-sm px-3 py-1">Δ {Number(form.watch("option_delta")).toFixed(3)}</Badge>
+                  )}
+                  {form.watch("option_theta") != null && (
+                    <Badge variant="outline" className="text-sm px-3 py-1">Θ {Number(form.watch("option_theta")).toFixed(4)}</Badge>
+                  )}
+                  {form.watch("option_iv") != null && (
+                    <Badge variant="outline" className="text-sm px-3 py-1">IV {Number(form.watch("option_iv")).toFixed(1)}%</Badge>
+                  )}
+                  <button
+                    type="button"
+                    className="text-xs text-muted-foreground underline ml-1"
+                    onClick={() => {
+                      form.setValue("option_delta", null);
+                      form.setValue("option_theta", null);
+                      form.setValue("option_iv", null);
+                    }}
+                  >
+                    clear
+                  </button>
                 </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="option_theta">Theta (daily)</Label>
-                  <Input id="option_theta" type="number" step="0.001" placeholder="auto" {...form.register("option_theta")} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="option_iv">IV %</Label>
-                  <Input id="option_iv" type="number" step="0.1" min="0" placeholder="auto" {...form.register("option_iv")} />
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Fill in Strike, Expiry, and CALL/PUT above, then click "Fetch from Polygon" to auto-populate.
-              </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Fill in Strike, Expiry, and CALL/PUT above, then click "Fetch from Polygon" to auto-populate.
+                </p>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
