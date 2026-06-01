@@ -6,7 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Loader2, Upload, X, Plus, RefreshCw } from "lucide-react";
+import { Loader2, Upload, X, Plus, RefreshCw, Sparkles } from "lucide-react";
 import Image from "next/image";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -91,6 +91,7 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
 
   const [saving, setSaving] = useState(false);
   const [fetchingPrice, setFetchingPrice] = useState<"entry" | "exit" | null>(null);
+  const [fetchingGreeks, setFetchingGreeks] = useState(false);
   const [images, setImages] = useState<{ type: "entry" | "exit" | "notes"; file?: File; url: string; existing?: boolean; id?: string }[]>(
     trade?.images?.map((img) => ({ type: img.image_type, url: img.public_url, existing: true, id: img.id })) ?? []
   );
@@ -228,6 +229,34 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
   }, [direction, entryPrice, exitPrice, quantity, fees, stopLoss, takeProfit]);
 
   const calc = exitLegs.length === 0 ? liveCalc() : null;
+
+  async function fetchGreeks() {
+    const symbol = form.getValues("symbol");
+    const expiry = form.getValues("option_expiry_date");
+    const strike = form.getValues("option_strike");
+    const optionType = form.getValues("option_type");
+    if (!symbol) { toast.error("Enter a symbol first (Core tab)"); return; }
+    if (!expiry) { toast.error("Select an expiry date first"); return; }
+    if (!strike) { toast.error("Enter a strike price first"); return; }
+    if (!optionType) { toast.error("Select CALL or PUT first"); return; }
+    setFetchingGreeks(true);
+    try {
+      const res = await fetch(
+        `/api/option-greeks?symbol=${encodeURIComponent(symbol)}&expiry=${expiry}&strike=${strike}&type=${optionType}`
+      );
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Failed");
+      if (json.delta != null) form.setValue("option_delta", json.delta);
+      if (json.theta != null) form.setValue("option_theta", json.theta);
+      if (json.iv != null) form.setValue("option_iv", json.iv);
+      if (json.lastPrice != null) form.setValue("option_premium", json.lastPrice);
+      toast.success(`Greeks fetched for ${json.occSymbol}`);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Could not fetch Greeks");
+    } finally {
+      setFetchingGreeks(false);
+    }
+  }
 
   async function fetchPrice(field: "entry" | "exit") {
     const symbol = form.getValues("symbol");
@@ -804,7 +833,16 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
         <TabsContent value="options" className="space-y-4 mt-4">
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">Options Contract Details</CardTitle>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base">Options Contract Details</CardTitle>
+                  {form.watch("symbol") && (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Underlying: <span className="font-semibold text-foreground">{form.watch("symbol")}</span>
+                    </p>
+                  )}
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
               {/* CALL / PUT */}
@@ -833,11 +871,7 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="option_expiry_date">Expiry Date</Label>
-                  <Input
-                    id="option_expiry_date"
-                    type="date"
-                    {...form.register("option_expiry_date")}
-                  />
+                  <Input id="option_expiry_date" type="date" {...form.register("option_expiry_date")} />
                 </div>
               </div>
 
@@ -865,21 +899,41 @@ export function TradeForm({ trade, strategies, tags }: TradeFormProps) {
               </div>
 
               <Separator />
-              <p className="text-sm font-medium">Greeks at Entry</p>
+
+              {/* Greeks — auto-fetched from Polygon */}
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">Greeks at Entry</p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={fetchGreeks}
+                  disabled={fetchingGreeks}
+                  title="Requires symbol, strike, expiry, and CALL/PUT to be set"
+                >
+                  {fetchingGreeks
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
+                    : <Sparkles className="w-3.5 h-3.5 mr-1.5" />}
+                  Fetch from Polygon
+                </Button>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="option_delta">Delta</Label>
-                  <Input id="option_delta" type="number" step="0.001" min="-1" max="1" placeholder="0.45" {...form.register("option_delta")} />
+                  <Input id="option_delta" type="number" step="0.001" min="-1" max="1" placeholder="auto" {...form.register("option_delta")} />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="option_theta">Theta (daily)</Label>
-                  <Input id="option_theta" type="number" step="0.001" placeholder="-0.05" {...form.register("option_theta")} />
+                  <Input id="option_theta" type="number" step="0.001" placeholder="auto" {...form.register("option_theta")} />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="option_iv">IV %</Label>
-                  <Input id="option_iv" type="number" step="0.1" min="0" placeholder="35.5" {...form.register("option_iv")} />
+                  <Input id="option_iv" type="number" step="0.1" min="0" placeholder="auto" {...form.register("option_iv")} />
                 </div>
               </div>
+              <p className="text-xs text-muted-foreground">
+                Fill in Strike, Expiry, and CALL/PUT above, then click "Fetch from Polygon" to auto-populate.
+              </p>
             </CardContent>
           </Card>
         </TabsContent>
